@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"github.com/rivo/tview"
@@ -26,13 +25,9 @@ type RangeRepairInfo struct {
 	StartTime   time.Time
 	EndTime     time.Time
 	Error       string
-	TaskID      string
 	SequenceNum int64
 	RetryCount  int
-	RepairID    string  // Repair task identifier
 	Progress    float64 // Progress from 0 to 1
-	TokenRanges int     // Total number of sub-ranges (usually 1 for individual range)
-	Completed   int     // Number of completed sub-ranges
 }
 
 // TableRepairInfo contains information about repair of specific table
@@ -42,46 +37,49 @@ type TableRepairInfo struct {
 	Status      RepairStatus
 	StartTime   time.Time
 	EndTime     time.Time
-	Error       string
 	Progress    float64           // From 0 to 1
 	TokenRanges int               // Total number of token ranges
 	Completed   int               // Number of processed token ranges
 	Retries     int               // Total number of retries for all ranges
-	RepairID    string            // Repair task identifier (not used in new logic)
 	Ranges      []RangeRepairInfo // List of all token ranges for repair
 }
 
 // ScyllaClusterConfig contains configuration for connecting to ScyllaDB cluster
 type ScyllaClusterConfig struct {
-	Host     string
-	Port     int
-	Username string
-	Password string
-	Timeout  time.Duration
+	Host    string
+	Port    int
+	Timeout time.Duration
 }
 
 // RepairConfig contains configuration for repair process
 type RepairConfig struct {
-	Parallel       int           // Number of parallel repairs
-	IncludeSystem  bool          // Whether to include system tables
-	TokenRanges    int           // Number of token ranges for repair (0 for auto-detection)
-	TableBlacklist []string      // List of tables that should not be repaired
-	RepairTimeout  time.Duration // Timeout for single repair operation (default 30 minutes)
-	MaxRetries     int           // Maximum number of retries for failed repair (default 3)
-	RetryDelay     time.Duration // Delay between retries (default 30 seconds)
+	Parallel      int           // Number of parallel repairs
+	IncludeSystem bool          // Whether to include system tables
+	RepairTimeout time.Duration // Timeout for single repair operation (default 30 minutes)
+	MaxRetries    int           // Maximum number of retries for failed repair (default 3)
+	RetryDelay    time.Duration // Delay between retries (default 30 seconds)
+}
+
+type ScylladbRepairTaskStatus struct {
+	TaskID         string `json:"task_id"`
+	State          string `json:"state"`
+	Type           string `json:"type"`
+	Scope          string `json:"scope"`
+	Keyspace       string `json:"keyspace"`
+	Table          string `json:"table"`
+	Entity         string `json:"entity"`
+	SequenceNumber int64  `json:"sequence_number"`
 }
 
 // ScyllaRepairApp represents the main application
 type ScyllaRepairApp struct {
-	app          *tview.Application
-	pages        *tview.Pages
-	clusterInfo  *tview.TextView
-	tablesList   *tview.Table
-	logView      *tview.TextView
-	progressView *tview.TextView
-	statusBar    *tview.TextView
+	app         *tview.Application
+	pages       *tview.Pages
+	clusterInfo *tview.TextView
+	tablesList  *tview.Table
+	logView     *tview.TextView
+	statusBar   *tview.TextView
 
-	httpClient    *http.Client
 	clusterConfig ScyllaClusterConfig
 	repairConfig  RepairConfig
 
@@ -96,8 +94,5 @@ type Node struct {
 	Datacenter string
 	Rack       string
 	Status     string
-	State      string
-	Load       string
-	TokenCount int
 	HostID     string
 }

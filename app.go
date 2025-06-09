@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -22,7 +21,6 @@ func NewScyllaRepairApp(config *Config) *ScyllaRepairApp {
 		tablesList:    tview.NewTable(),
 		logView:       tview.NewTextView(),
 		statusBar:     tview.NewTextView(),
-		httpClient:    &http.Client{Timeout: 30 * time.Second},
 		repairConfig:  config.Repair,
 		clusterConfig: config.Cluster,
 		tableManager:  NewTableManager(),
@@ -37,7 +35,7 @@ func (app *ScyllaRepairApp) setupUI() {
 	// Setup interface
 	app.clusterInfo.SetBorder(true).SetTitle("Cluster Info")
 	app.tablesList.SetBorder(true).SetTitle("Tables")
-	app.logView.SetBorder(true).SetTitle("Logs")
+	app.logView.SetBorder(true).SetTitle("Logs (press escape to view tables)")
 	app.statusBar.SetBorder(true).SetTitle("Status")
 
 	// Setup table with list of tables
@@ -54,7 +52,7 @@ func (app *ScyllaRepairApp) setupUI() {
 
 	// Setup main page
 	mainGrid := tview.NewGrid().
-		SetRows(8, 0, 8).
+		SetRows(8, 0, 3).
 		SetColumns(0).
 		AddItem(app.clusterInfo, 0, 0, 1, 1, 0, 0, false).
 		AddItem(app.tablesList, 1, 0, 1, 1, 0, 0, true).
@@ -87,7 +85,7 @@ func (app *ScyllaRepairApp) setupUI() {
 				go app.startRepair()
 			}
 			return nil
-		} else if event.Key() == tcell.KeyCtrlQ {
+		} else if event.Key() == tcell.KeyCtrlC {
 			// Exit application
 			app.app.Stop()
 			return nil
@@ -111,7 +109,7 @@ func (app *ScyllaRepairApp) Run() error {
 	return app.app.Run()
 }
 
-func (app *ScyllaRepairApp) log(format string, args ...interface{}) {
+func (app *ScyllaRepairApp) log(format string, args ...any) {
 	message := fmt.Sprintf("[%s] %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 	app.app.QueueUpdateDraw(func() {
 		fmt.Fprint(app.logView, message)
@@ -122,7 +120,7 @@ func (app *ScyllaRepairApp) log(format string, args ...interface{}) {
 func (app *ScyllaRepairApp) updateStatusBar(message string) {
 	app.app.QueueUpdateDraw(func() {
 		app.statusBar.Clear()
-		fmt.Fprintf(app.statusBar, "%s | Ctrl+R: repair selected table | Ctrl+L: logs | Escape: main view | Ctrl+Q: quit", message)
+		fmt.Fprintf(app.statusBar, "%s | Ctrl+R: repair selected table | Ctrl+L: logs | Escape: main view | Ctrl+C: quit", message)
 	})
 }
 
@@ -137,8 +135,6 @@ func (app *ScyllaRepairApp) initialize() {
 	api := NewScyllaAPI(
 		app.clusterConfig.Host,
 		app.clusterConfig.Port,
-		app.clusterConfig.Username,
-		app.clusterConfig.Password,
 		app.clusterConfig.Timeout,
 	)
 
@@ -162,7 +158,7 @@ func (app *ScyllaRepairApp) initialize() {
 	app.app.QueueUpdateDraw(func() {
 		app.clusterInfo.Clear()
 		fmt.Fprintf(app.clusterInfo, "Connected to ScyllaDB at %s:%d\n", app.clusterConfig.Host, app.clusterConfig.Port)
-		fmt.Fprintf(app.clusterInfo, "Cluster nodes: %d\n", len(nodes))
+		fmt.Fprintf(app.clusterInfo, "Cluster nodes: %d (displaying details for first 4)\n", len(nodes))
 
 		for _, node := range nodes {
 			fmt.Fprintf(app.clusterInfo, "- %s (%s): %s, DC: %s, Rack: %s\n",
@@ -193,18 +189,6 @@ func (app *ScyllaRepairApp) initialize() {
 		}
 
 		for _, tableName := range tableNames {
-			// Check blacklisted tables
-			skip := false
-			for _, blacklisted := range app.repairConfig.TableBlacklist {
-				if blacklisted == tableName || blacklisted == fmt.Sprintf("%s.%s", keyspace, tableName) {
-					skip = true
-					break
-				}
-			}
-			if skip {
-				continue
-			}
-
 			// Get token ranges for table
 			app.log("Getting token ranges for %s.%s...", keyspace, tableName)
 			ranges, err := api.GetTableRanges(ctx, keyspace, tableName)
@@ -220,55 +204,25 @@ func (app *ScyllaRepairApp) initialize() {
 				continue
 			}
 
-			// Get local node address
-			localEndpoint, err := api.GetLocalEndpoint(ctx)
-			if err != nil {
-				app.log("Warning: could not determine local endpoint for %s.%s: %v", keyspace, tableName, err)
-				localEndpoint = app.clusterConfig.Host // Fallback to specified host
-			}
-
-			// Filter ranges only for local node
-			var localRanges []RangeRepairInfo
+			// Convert all token ranges to repair ranges
+			var allRanges []RangeRepairInfo
 			for _, tokenRange := range ranges {
-				// Check if local endpoint is among owners of this range
-				isLocal := false
-				for _, endpoint := range tokenRange.Endpoints {
-					if endpoint == localEndpoint || endpoint == app.clusterConfig.Host {
-						isLocal = true
-						break
-					}
-				}
-
-				if isLocal {
-					localRanges = append(localRanges, RangeRepairInfo{
-						StartToken: tokenRange.StartToken,
-						EndToken:   tokenRange.EndToken,
-						Status:     RepairStatusPending,
-					})
-				}
-			}
-
-			if len(localRanges) == 0 {
-				app.log("No local ranges found for %s.%s, will repair all ranges", keyspace, tableName)
-				// If no local ranges, take all ranges
-				for _, tokenRange := range ranges {
-					localRanges = append(localRanges, RangeRepairInfo{
-						StartToken: tokenRange.StartToken,
-						EndToken:   tokenRange.EndToken,
-						Status:     RepairStatusPending,
-					})
-				}
+				allRanges = append(allRanges, RangeRepairInfo{
+					StartToken: tokenRange.StartToken,
+					EndToken:   tokenRange.EndToken,
+					Status:     RepairStatusPending,
+				})
 			}
 
 			tables = append(tables, TableRepairInfo{
 				Keyspace:    keyspace,
 				Table:       tableName,
 				Status:      RepairStatusPending,
-				TokenRanges: len(localRanges),
-				Ranges:      localRanges,
+				TokenRanges: len(allRanges),
+				Ranges:      allRanges,
 			})
 
-			app.log("Found %d ranges for %s.%s", len(localRanges), keyspace, tableName)
+			app.log("Found %d ranges for %s.%s", len(allRanges), keyspace, tableName)
 		}
 	}
 
@@ -419,8 +373,6 @@ func (app *ScyllaRepairApp) startRepair() {
 	api := NewScyllaAPI(
 		app.clusterConfig.Host,
 		app.clusterConfig.Port,
-		app.clusterConfig.Username,
-		app.clusterConfig.Password,
 		app.clusterConfig.Timeout,
 	)
 
@@ -522,6 +474,15 @@ func (app *ScyllaRepairApp) repairRange(ctx context.Context, api *ScyllaAPI, tab
 	// Wait for completion synchronously with timeout from config
 	status, err := api.GetRepairStatus(ctx, seqNum, app.repairConfig.RepairTimeout)
 	if err != nil {
+		if strings.Contains(err.Error(), "repair timed out") {
+			err = api.CancelRangeRepair(ctx, seqNum)
+			if err != nil {
+				app.log("Worker %d: Failed to cancel repair: %v", workerID, err)
+				app.tableManager.SetRangeStatus(tableIdx, rangeIdx, RepairStatusFailed, fmt.Sprintf("Failed to cancel repair: %v", err))
+				return err
+			}
+			app.log("Worker %d: Repair cancelled", workerID)
+		}
 		app.log("Worker %d: Error getting repair status: %v", workerID, err)
 		app.tableManager.SetRangeStatus(tableIdx, rangeIdx, RepairStatusFailed, fmt.Sprintf("Status check failed: %v", err))
 		return err
@@ -596,6 +557,12 @@ func (app *ScyllaRepairApp) repairRangeWithRetries(ctx context.Context, api *Scy
 			if attempt > 0 {
 				app.log("Worker %d: Repair succeeded after %d retries for %s.%s range %s", workerID, attempt, table.Keyspace, table.Table, tokenRange)
 			}
+			return
+		}
+
+		if strings.Contains(err.Error(), "repair task is still running after cancellation") {
+			app.log("Worker %d: Repair task is still running after cancellation for %s.%s range %s", workerID, table.Keyspace, table.Table, tokenRange)
+			app.tableManager.SetRangeStatus(tableIdx, rangeIdx, RepairStatusFailed, fmt.Sprintf("Repair task is still running after cancellation: %v", err))
 			return
 		}
 

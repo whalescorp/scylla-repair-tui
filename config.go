@@ -26,7 +26,7 @@ func LoadConfig() (*Config, error) {
 		Repair: RepairConfig{
 			Parallel:      2,
 			IncludeSystem: false,
-			TokenRanges:   0,
+			// FIXME: take from config
 			RepairTimeout: 30 * time.Minute,
 			MaxRetries:    3,
 			RetryDelay:    30 * time.Second,
@@ -40,11 +40,8 @@ func LoadConfig() (*Config, error) {
 	// Cluster parameters
 	var hostFlag string
 	var portFlag int
-	var userFlag, passFlag string
 	flag.StringVar(&hostFlag, "host", "", "ScyllaDB host (default: localhost)")
 	flag.IntVar(&portFlag, "port", 0, "ScyllaDB port (default: 10000)")
-	flag.StringVar(&userFlag, "user", "", "username")
-	flag.StringVar(&passFlag, "password", "", "password")
 
 	// Repair parameters
 	var parallelFlag int
@@ -77,24 +74,12 @@ func LoadConfig() (*Config, error) {
 		config.Cluster.Port = portFlag
 	}
 
-	if userFlag != "" {
-		config.Cluster.Username = userFlag
-	}
-
-	if passFlag != "" {
-		config.Cluster.Password = passFlag
-	}
-
 	if parallelFlag != 0 {
 		config.Repair.Parallel = parallelFlag
 	}
 
 	if includeSystemFlag {
 		config.Repair.IncludeSystem = true
-	}
-
-	if tokenRangesFlag != 0 {
-		config.Repair.TokenRanges = tokenRangesFlag
 	}
 
 	return config, nil

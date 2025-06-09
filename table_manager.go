@@ -57,7 +57,6 @@ func (tm *TableManager) StartTableRepair(tableIdx int) bool {
 	table.Retries = 0
 	table.StartTime = time.Now()
 	table.EndTime = time.Time{}
-	table.Error = ""
 
 	// Reset status of all ranges
 	for j := range table.Ranges {
@@ -65,7 +64,6 @@ func (tm *TableManager) StartTableRepair(tableIdx int) bool {
 		table.Ranges[j].StartTime = time.Time{}
 		table.Ranges[j].EndTime = time.Time{}
 		table.Ranges[j].Error = ""
-		table.Ranges[j].TaskID = ""
 		table.Ranges[j].SequenceNum = 0
 		table.Ranges[j].RetryCount = 0
 	}

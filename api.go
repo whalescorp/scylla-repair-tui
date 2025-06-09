@@ -13,27 +13,21 @@ import (
 
 // ScyllaAPI provides methods for interacting with ScyllaDB REST API
 type ScyllaAPI struct {
-	client  *http.Client
-	baseURL string
-	auth    string
+	client         *http.Client
+	baseURL        string
+	requestTimeout time.Duration
 }
 
 // NewScyllaAPI creates new object for working with ScyllaDB API
-func NewScyllaAPI(host string, port int, username, password string, timeout time.Duration) *ScyllaAPI {
-	client := &http.Client{
-		Timeout: timeout,
-	}
+func NewScyllaAPI(host string, port int, timeout time.Duration) *ScyllaAPI {
+	client := &http.Client{}
 
 	baseURL := fmt.Sprintf("http://%s:%d", host, port)
-	var auth string
-	if username != "" && password != "" {
-		auth = fmt.Sprintf("%s:%s", username, password)
-	}
 
 	return &ScyllaAPI{
-		client:  client,
-		baseURL: baseURL,
-		auth:    auth,
+		client:         client,
+		baseURL:        baseURL,
+		requestTimeout: timeout,
 	}
 }
 
@@ -89,12 +83,6 @@ func (api *ScyllaAPI) GetTables(ctx context.Context, keyspace string) ([]string,
 type KeyValuePair struct {
 	Key   string `json:"key"`
 	Value any    `json:"value"`
-}
-
-// LoadMapEntry represents record in load map
-type LoadMapEntry struct {
-	Key   string  `json:"key"`
-	Value float64 `json:"value"`
 }
 
 // GetNodes returns information about nodes in cluster
@@ -190,6 +178,8 @@ func (api *ScyllaAPI) GetNodes(ctx context.Context) ([]Node, error) {
 				if dcBody, err := io.ReadAll(dcResp.Body); err == nil {
 					node.Datacenter = strings.Trim(string(dcBody), `"`)
 				}
+			} else {
+				node.Datacenter = "N/A"
 			}
 
 			// Try to get rack
@@ -199,21 +189,8 @@ func (api *ScyllaAPI) GetNodes(ctx context.Context) ([]Node, error) {
 				if rackBody, err := io.ReadAll(rackResp.Body); err == nil {
 					node.Rack = strings.Trim(string(rackBody), `"`)
 				}
-			}
-
-			// Get node load
-			loadResp, err := api.makeRequest(ctx, "GET", "/storage_service/load_map", nil)
-			if err == nil {
-				defer loadResp.Body.Close()
-				var loadMap []LoadMapEntry
-				if err := json.NewDecoder(loadResp.Body).Decode(&loadMap); err == nil {
-					for _, loadEntry := range loadMap {
-						if loadEntry.Key == address {
-							node.Load = fmt.Sprintf("%.2f MB", loadEntry.Value/(1024*1024)) // Convert bytes to MB
-							break
-						}
-					}
-				}
+			} else {
+				node.Rack = "N/A"
 			}
 		}
 
@@ -223,45 +200,12 @@ func (api *ScyllaAPI) GetNodes(ctx context.Context) ([]Node, error) {
 	return nodes, nil
 }
 
-// StartRepair starts repair for specified table
-func (api *ScyllaAPI) StartRepair(ctx context.Context, keyspace, table string, options map[string]string) (string, error) {
-	params := make(url.Values)
-	params.Set("columnFamilies", table)
-
-	// Add additional options
-	for k, v := range options {
-		params.Set(k, v)
-	}
-
-	path := fmt.Sprintf("/storage_service/repair_async/%s", keyspace)
-	if len(params) > 0 {
-		path += "?" + params.Encode()
-	}
-
-	resp, err := api.makeRequest(ctx, "POST", path, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to start repair for %s.%s: %w", keyspace, table, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read repair response: %w", err)
-	}
-
-	// Response should contain repair task ID
-	repairID := string(body)
-	repairID = strings.TrimSpace(repairID)
-	repairID = strings.Trim(repairID, `"`) // Remove quotes if any
-	return repairID, nil
-}
-
 // GetRepairStatus checks repair task status by sequence number with configurable timeout
-func (api *ScyllaAPI) GetRepairStatus(ctx context.Context, sequenceNumber int64, timeout time.Duration) (map[string]interface{}, error) {
+func (api *ScyllaAPI) GetRepairStatus(ctx context.Context, sequenceNumber int64, timeout time.Duration) (map[string]any, error) {
 	// Convert timeout to seconds for API
 	timeoutSeconds := int(timeout.Seconds())
 	path := fmt.Sprintf("/storage_service/repair_status?id=%d&timeout=%d", sequenceNumber, timeoutSeconds)
-	resp, err := api.makeRequest(ctx, "GET", path, nil)
+	resp, err := api.makeRequest(ctx, "GET", path, nil, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repair status for sequence %d: %w", sequenceNumber, err)
 	}
@@ -277,7 +221,7 @@ func (api *ScyllaAPI) GetRepairStatus(ctx context.Context, sequenceNumber int64,
 	statusStr = strings.Trim(statusStr, `"`)
 
 	// Create status map
-	status := make(map[string]interface{})
+	status := make(map[string]any)
 	status["state"] = statusStr
 
 	// Process only real statuses from ScyllaDB sources
@@ -285,7 +229,7 @@ func (api *ScyllaAPI) GetRepairStatus(ctx context.Context, sequenceNumber int64,
 	// For task_state enum: created, running, done, failed
 	switch strings.ToUpper(statusStr) {
 	case "RUNNING":
-		status["progress"] = 0.5 // Approximate value for running repair
+		return nil, fmt.Errorf("repair timed out")
 	case "SUCCESSFUL", "SUCCESS":
 		status["progress"] = 1.0
 		status["success"] = 1.0
@@ -299,6 +243,52 @@ func (api *ScyllaAPI) GetRepairStatus(ctx context.Context, sequenceNumber int64,
 	}
 
 	return status, nil
+}
+
+// CancelRangeRepair cancels repair for specific token range
+func (api *ScyllaAPI) CancelRangeRepair(ctx context.Context, seqNum int64) error {
+	resp, err := api.makeRequest(ctx, "GET", "/task_manager/list_module_tasks/repair", nil)
+	if err != nil {
+		return fmt.Errorf("failed to get repair tasks: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var tasksBefore []ScylladbRepairTaskStatus
+	if err := json.NewDecoder(resp.Body).Decode(&tasksBefore); err != nil {
+		return fmt.Errorf("failed to decode repair tasks: %w", err)
+	}
+
+	for _, task := range tasksBefore {
+		if task.SequenceNumber == seqNum {
+			path := fmt.Sprintf("/task_manager/abort_task/%s", task.TaskID)
+			// Let's assume that task cleanup process is very costly, so we give it 5 minutes to complete
+			resp, err := api.makeRequest(ctx, "POST", path, nil, 5*time.Minute)
+			if err != nil {
+				return fmt.Errorf("failed to cancel range repair: %w", err)
+			}
+			defer resp.Body.Close()
+			return nil
+		}
+	}
+
+	resp, err = api.makeRequest(ctx, "GET", "/task_manager/list_module_tasks/repair", nil)
+	if err != nil {
+		return fmt.Errorf("failed to get repair tasks: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var tasksAfter []ScylladbRepairTaskStatus
+	if err := json.NewDecoder(resp.Body).Decode(&tasksAfter); err != nil {
+		return fmt.Errorf("failed to decode repair tasks: %w", err)
+	}
+
+	for _, task := range tasksAfter {
+		if task.SequenceNumber == seqNum {
+			return fmt.Errorf("repair task is still running after cancellation")
+		}
+	}
+
+	return fmt.Errorf("repair task not found")
 }
 
 // TestConnection checks connection to ScyllaDB
@@ -317,9 +307,17 @@ func (api *ScyllaAPI) TestConnection(ctx context.Context) error {
 }
 
 // makeRequest performs HTTP request to ScyllaDB API
-func (api *ScyllaAPI) makeRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+func (api *ScyllaAPI) makeRequest(ctx context.Context, method, path string, body io.Reader, timeout ...time.Duration) (*http.Response, error) {
+	timeoutLocal := api.requestTimeout
+	ctxLocal := ctx
+	if len(timeout) > 0 {
+		timeoutLocal = timeout[0]
+	}
+
+	ctxLocal, _ = context.WithTimeout(ctx, timeoutLocal)
+
 	url := api.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	req, err := http.NewRequestWithContext(ctxLocal, method, url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -327,10 +325,6 @@ func (api *ScyllaAPI) makeRequest(ctx context.Context, method, path string, body
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
-	}
-
-	if api.auth != "" {
-		req.SetBasicAuth(strings.Split(api.auth, ":")[0], strings.Split(api.auth, ":")[1])
 	}
 
 	return api.client.Do(req)
@@ -367,35 +361,6 @@ func (api *ScyllaAPI) GetTableRanges(ctx context.Context, keyspace, table string
 	}
 
 	return ranges, nil
-}
-
-// GetLocalEndpoint returns address of local node
-func (api *ScyllaAPI) GetLocalEndpoint(ctx context.Context) (string, error) {
-	// Try to get from different sources
-	endpoints := []string{
-		"/storage_service/hostid/local",
-		"/snitch/datacenter", // this will return information about local node
-	}
-
-	for _, endpoint := range endpoints {
-		resp, err := api.makeRequest(ctx, "GET", endpoint, nil)
-		if err != nil {
-			continue
-		}
-		defer resp.Body.Close()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			continue
-		}
-
-		result := strings.Trim(string(body), `"`)
-		if result != "" {
-			return result, nil
-		}
-	}
-
-	return "", fmt.Errorf("failed to determine local endpoint")
 }
 
 // StartRangeRepair starts repair for specific token range
