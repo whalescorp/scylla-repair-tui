@@ -75,7 +75,10 @@ type ScylladbRepairTaskStatus struct {
 type ScyllaRepairApp struct {
 	app         *tview.Application
 	pages       *tview.Pages
-	clusterInfo *tview.TextView
+	nodesGrid   *tview.Grid
+	nodesTable1 *tview.Table
+	separator   *tview.Table
+	nodesTable2 *tview.Table
 	tablesList  *tview.Table
 	logView     *tview.TextView
 	statusBar   *tview.TextView
@@ -83,9 +86,10 @@ type ScyllaRepairApp struct {
 	clusterConfig ScyllaClusterConfig
 	repairConfig  RepairConfig
 
-	tableManager *TableManager
-	repairActive bool
-	cancel       context.CancelFunc
+	tableManager   *TableManager
+	repairActive   bool
+	autoRepairMode bool
+	cancel         context.CancelFunc
 }
 
 // Node represents information about cluster node

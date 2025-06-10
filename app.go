@@ -17,7 +17,9 @@ func NewScyllaRepairApp(config *Config) *ScyllaRepairApp {
 	app := &ScyllaRepairApp{
 		app:           tview.NewApplication(),
 		pages:         tview.NewPages(),
-		clusterInfo:   tview.NewTextView(),
+		nodesTable1:   tview.NewTable(),
+		separator:     tview.NewTable(),
+		nodesTable2:   tview.NewTable(),
 		tablesList:    tview.NewTable(),
 		logView:       tview.NewTextView(),
 		statusBar:     tview.NewTextView(),
@@ -32,29 +34,48 @@ func NewScyllaRepairApp(config *Config) *ScyllaRepairApp {
 
 // setupUI sets up user interface
 func (app *ScyllaRepairApp) setupUI() {
-	// Setup interface
-	app.clusterInfo.SetBorder(true).SetTitle("Cluster Info")
-	app.tablesList.SetBorder(true).SetTitle("Tables")
-	app.logView.SetBorder(true).SetTitle("Logs (press escape to view tables)")
-	app.statusBar.SetBorder(true).SetTitle("Status")
+	// Setup first nodes table
+	InitNodeDetailsTable(app.nodesTable1)
+
+	// Setup separator
+	app.separator.SetBorder(false)
+	app.separator.SetSelectable(false, false)
+	app.separator.SetCell(0, 0, tview.NewTableCell("│").SetTextColor(tcell.ColorWhite).SetAlign(tview.AlignCenter).SetSelectable(false))
+
+	// Setup second nodes table
+	InitNodeDetailsTable(app.nodesTable2)
 
 	// Setup table with list of tables
+	app.tablesList.SetBorder(true).SetTitle("Tables")
 	app.tablesList.SetSelectable(true, false)
 	app.tablesList.SetFixed(1, 0)
-	app.tablesList.SetCell(0, 0, tview.NewTableCell("Keyspace").SetTextColor(tcell.ColorYellow).SetSelectable(false))
-	app.tablesList.SetCell(0, 1, tview.NewTableCell("Table").SetTextColor(tcell.ColorYellow).SetSelectable(false))
-	app.tablesList.SetCell(0, 2, tview.NewTableCell("Status").SetTextColor(tcell.ColorYellow).SetSelectable(false))
-	app.tablesList.SetCell(0, 3, tview.NewTableCell("Progress").SetTextColor(tcell.ColorYellow).SetSelectable(false))
-	app.tablesList.SetCell(0, 4, tview.NewTableCell("Completed/Total").SetTextColor(tcell.ColorYellow).SetSelectable(false))
-	app.tablesList.SetCell(0, 5, tview.NewTableCell("Retries").SetTextColor(tcell.ColorYellow).SetSelectable(false))
-	app.tablesList.SetCell(0, 6, tview.NewTableCell("Start Time").SetTextColor(tcell.ColorYellow).SetSelectable(false))
-	app.tablesList.SetCell(0, 7, tview.NewTableCell("Duration").SetTextColor(tcell.ColorYellow).SetSelectable(false))
+	app.tablesList.SetCell(0, 0, tview.NewTableCell("Keyspace").SetTextColor(tcell.ColorYellow).SetSelectable(false).SetExpansion(1))
+	app.tablesList.SetCell(0, 1, tview.NewTableCell("Table").SetTextColor(tcell.ColorYellow).SetSelectable(false).SetExpansion(1))
+	app.tablesList.SetCell(0, 2, tview.NewTableCell("Status").SetTextColor(tcell.ColorYellow).SetSelectable(false).SetExpansion(1))
+	app.tablesList.SetCell(0, 3, tview.NewTableCell("Progress").SetTextColor(tcell.ColorYellow).SetSelectable(false).SetExpansion(1))
+	app.tablesList.SetCell(0, 4, tview.NewTableCell("Completed/Total").SetTextColor(tcell.ColorYellow).SetSelectable(false).SetExpansion(1))
+	app.tablesList.SetCell(0, 5, tview.NewTableCell("Retries").SetTextColor(tcell.ColorYellow).SetSelectable(false).SetExpansion(1))
+	app.tablesList.SetCell(0, 6, tview.NewTableCell("Start Time").SetTextColor(tcell.ColorYellow).SetSelectable(false).SetExpansion(1))
+	app.tablesList.SetCell(0, 7, tview.NewTableCell("Duration").SetTextColor(tcell.ColorYellow).SetSelectable(false).SetExpansion(1))
+
+	// Setup logs and status
+	app.logView.SetBorder(true).SetTitle("Logs (press escape to view main page)")
+	app.statusBar.SetBorder(true).SetTitle("Status")
+
+	// Create nodes grid with two columns, separator, and shared title
+	app.nodesGrid = tview.NewGrid().
+		SetRows(0).
+		SetColumns(0, 1, 0).
+		AddItem(app.nodesTable1, 0, 0, 1, 1, 0, 0, false).
+		AddItem(app.separator, 0, 1, 1, 1, 0, 0, false).
+		AddItem(app.nodesTable2, 0, 2, 1, 1, 0, 0, false)
+	app.nodesGrid.SetBorder(true).SetTitle("Connected to ScyllaDB")
 
 	// Setup main page
 	mainGrid := tview.NewGrid().
-		SetRows(8, 0, 3).
+		SetRows(7, 0, 3).
 		SetColumns(0).
-		AddItem(app.clusterInfo, 0, 0, 1, 1, 0, 0, false).
+		AddItem(app.nodesGrid, 0, 0, 1, 1, 0, 0, false).
 		AddItem(app.tablesList, 1, 0, 1, 1, 0, 0, true).
 		AddItem(app.statusBar, 2, 0, 1, 1, 0, 0, false)
 
@@ -73,23 +94,55 @@ func (app *ScyllaRepairApp) setupUI() {
 		if event.Key() == tcell.KeyEscape {
 			// Always return to main page by Escape
 			app.pages.SwitchToPage("main")
+			// If exiting auto repair mode, restore cursor
+			if app.autoRepairMode {
+				app.tablesList.SetSelectable(false, false)
+			}
 			return nil
 		} else if event.Key() == tcell.KeyCtrlL {
 			// Switch to page with logs
 			app.pages.SwitchToPage("logs")
 			return nil
 		} else if event.Key() == tcell.KeyCtrlR {
-			// Start repair process only on main page
+			// Start repair process only on main page and not in auto repair mode
 			currentPage, _ := app.pages.GetFrontPage()
-			if currentPage == "main" {
+			if currentPage == "main" && !app.autoRepairMode {
 				go app.startRepair()
+			}
+			return nil
+		} else if event.Key() == tcell.KeyCtrlA {
+			// Start auto repair mode
+			if app.repairActive {
+				app.log("Repair is already running, cannot start auto repair mode")
+				return nil
+			}
+			if !app.autoRepairMode {
+				go app.startAutoRepair()
 			}
 			return nil
 		} else if event.Key() == tcell.KeyCtrlC {
 			// Exit application
 			app.app.Stop()
 			return nil
+		} else if event.Key() == tcell.KeyPgUp && event.Modifiers()&tcell.ModAlt != 0 {
+			// Alt+PageUp - scroll nodes tables up
+			go app.scrollNodesTables(-5)
+			return nil
+		} else if event.Key() == tcell.KeyPgDn && event.Modifiers()&tcell.ModAlt != 0 {
+			// Alt+PageDown - scroll nodes tables down
+			go app.scrollNodesTables(5)
+			return nil
 		}
+
+		// Block navigation in auto repair mode
+		if app.autoRepairMode {
+			// Only allow Ctrl+L, Ctrl+C, and Escape
+			if event.Key() == tcell.KeyCtrlL || event.Key() == tcell.KeyCtrlC || event.Key() == tcell.KeyEscape {
+				return event
+			}
+			return nil
+		}
+
 		return event
 	})
 
@@ -120,7 +173,11 @@ func (app *ScyllaRepairApp) log(format string, args ...any) {
 func (app *ScyllaRepairApp) updateStatusBar(message string) {
 	app.app.QueueUpdateDraw(func() {
 		app.statusBar.Clear()
-		fmt.Fprintf(app.statusBar, "%s | Ctrl+R: repair selected table | Ctrl+L: logs | Escape: main view | Ctrl+C: quit", message)
+		if app.autoRepairMode {
+			fmt.Fprintf(app.statusBar, "%s | AUTO REPAIR MODE | Ctrl+L: logs | Ctrl+C: quit", message)
+		} else {
+			fmt.Fprintf(app.statusBar, "%s | Ctrl+R: repair selected table | Ctrl+A: auto repair all | Ctrl+L: logs | Alt+PgUp/PgDn: scroll nodes | Escape: main view | Ctrl+C: quit", message)
+		}
 	})
 }
 
@@ -154,16 +211,17 @@ func (app *ScyllaRepairApp) initialize() {
 		return
 	}
 
-	// Display cluster information
-	app.app.QueueUpdateDraw(func() {
-		app.clusterInfo.Clear()
-		fmt.Fprintf(app.clusterInfo, "Connected to ScyllaDB at %s:%d\n", app.clusterConfig.Host, app.clusterConfig.Port)
-		fmt.Fprintf(app.clusterInfo, "Cluster nodes: %d (displaying details for first 4)\n", len(nodes))
+	// Store nodes in table manager and update display
+	app.tableManager.SetNodes(nodes)
 
-		for _, node := range nodes {
-			fmt.Fprintf(app.clusterInfo, "- %s (%s): %s, DC: %s, Rack: %s\n",
-				node.Address, node.HostID, node.Status, node.Datacenter, node.Rack)
-		}
+	app.app.QueueUpdateDraw(func() {
+		// Update grid title with connection info
+		title := fmt.Sprintf("Connected to ScyllaDB at %s:%d | Nodes: %d",
+			app.clusterConfig.Host, app.clusterConfig.Port, app.tableManager.GetNodeCount())
+		app.nodesGrid.SetTitle(title)
+
+		// Update nodes display using table manager
+		app.tableManager.UpdateNodesDisplay(app.nodesTable1, app.nodesTable2, app.separator)
 	})
 
 	// Get list of keyspaces
@@ -327,22 +385,27 @@ func (app *ScyllaRepairApp) updateTablesList() {
 	})
 }
 
-// startRepair starts repair process for selected table
-func (app *ScyllaRepairApp) startRepair() {
-	if app.repairActive {
+// startRepair starts repair process for selected table (or specified table index)
+func (app *ScyllaRepairApp) startRepair(tableIdx ...int) {
+	if app.repairActive && !app.autoRepairMode {
 		app.log("Repair is already running")
 		return
 	}
 
-	// Get current selected row
-	selectedRow, _ := app.tablesList.GetSelection()
-	if selectedRow <= 0 || selectedRow > app.tableManager.GetTableCount() {
-		app.log("No table selected")
-		app.updateStatusBar("No table selected")
-		return
+	var selectedTableIdx int
+	if len(tableIdx) > 0 {
+		// Use provided table index (for auto repair)
+		selectedTableIdx = tableIdx[0]
+	} else {
+		// Get current selected row (for manual repair)
+		selectedRow, _ := app.tablesList.GetSelection()
+		if selectedRow <= 0 || selectedRow > app.tableManager.GetTableCount() {
+			app.log("No table selected")
+			app.updateStatusBar("No table selected")
+			return
+		}
+		selectedTableIdx = selectedRow - 1 // -1 because of headers
 	}
-
-	selectedTableIdx := selectedRow - 1 // -1 because of headers
 	selectedTable, ok := app.tableManager.GetTableInfo(selectedTableIdx)
 	if !ok {
 		app.log("Invalid table selected")
@@ -587,4 +650,120 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
 	}
 	return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// startAutoRepair starts automatic repair of all tables sequentially
+func (app *ScyllaRepairApp) startAutoRepair() {
+	app.autoRepairMode = true
+	app.repairActive = true
+
+	app.log("Starting auto repair mode - all tables will be repaired sequentially")
+	app.updateStatusBar("Auto repair mode started")
+
+	// Hide selection cursor during auto repair
+	app.app.QueueUpdateDraw(func() {
+		app.tablesList.SetSelectable(false, false)
+	})
+
+	tableCount := app.tableManager.GetTableCount()
+	successCount := 0
+
+	// Repair each table sequentially
+	for i := range tableCount {
+		tableInfo, ok := app.tableManager.GetTableInfo(i)
+		if !ok {
+			continue
+		}
+
+		if len(tableInfo.Ranges) == 0 {
+			app.log("Skipping table %s.%s - no ranges found", tableInfo.Keyspace, tableInfo.Table)
+			continue
+		}
+
+		app.log("Auto repair: starting table %d/%d - %s.%s", i+1, tableCount, tableInfo.Keyspace, tableInfo.Table)
+		app.updateStatusBar(fmt.Sprintf("Auto repair: table %d/%d - %s.%s", i+1, tableCount, tableInfo.Keyspace, tableInfo.Table))
+
+		// Repair all ranges for this table using existing startRepair logic
+		app.startRepair(i)
+
+		// Wait for repair to complete by checking status
+		success := app.waitForTableRepairCompletion(i)
+
+		if success {
+			successCount++
+			app.log("Auto repair: completed table %s.%s successfully", tableInfo.Keyspace, tableInfo.Table)
+		} else {
+			app.log("Auto repair: failed to repair table %s.%s", tableInfo.Keyspace, tableInfo.Table)
+		}
+
+		app.tableManager.FinishTableRepair(i)
+		app.updateTablesList()
+	}
+
+	// Auto repair completed
+	app.autoRepairMode = false
+	app.repairActive = false
+
+	// Restore selection cursor
+	app.app.QueueUpdateDraw(func() {
+		app.tablesList.SetSelectable(true, false)
+	})
+
+	app.log("Auto repair completed: %d/%d tables repaired successfully", successCount, tableCount)
+	app.updateStatusBar(fmt.Sprintf("Auto repair completed: %d/%d tables repaired successfully", successCount, tableCount))
+}
+
+// waitForTableRepairCompletion waits for a table repair to complete and returns success status
+func (app *ScyllaRepairApp) waitForTableRepairCompletion(tableIdx int) bool {
+	// Wait until repair is no longer active
+	for app.repairActive {
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Check final status of all ranges
+	tableInfo, ok := app.tableManager.GetTableInfo(tableIdx)
+	if !ok {
+		return false
+	}
+
+	for _, rangeInfo := range tableInfo.Ranges {
+		if rangeInfo.Status != RepairStatusCompleted {
+			return false
+		}
+	}
+
+	return true
+}
+
+// scrollNodesTables scrolls both nodes tables by the specified offset
+func (app *ScyllaRepairApp) scrollNodesTables(offset int) {
+	app.app.QueueUpdateDraw(func() {
+		if offset > 0 {
+			// Scroll down
+			for i := 0; i < offset; i++ {
+				// Get current row count to check bounds
+				rowCount := app.nodesTable1.GetRowCount()
+				if rowCount <= 1 { // Only header
+					break
+				}
+
+				// Try to scroll down - tview handles bounds automatically
+				currentRow, _ := app.nodesTable1.GetOffset()
+				if currentRow < rowCount-2 { // -2 to account for header and last row
+					app.nodesTable1.SetOffset(currentRow+1, 0)
+					app.nodesTable2.SetOffset(currentRow+1, 0)
+				}
+			}
+		} else {
+			// Scroll up
+			for i := 0; i < -offset; i++ {
+				// Try to scroll up - tview handles bounds automatically
+				currentRow, _ := app.nodesTable1.GetOffset()
+				if currentRow > 0 {
+					app.nodesTable1.SetOffset(currentRow-1, 0)
+					app.nodesTable2.SetOffset(currentRow-1, 0)
+				}
+			}
+		}
+	})
 }
