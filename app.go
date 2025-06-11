@@ -23,6 +23,7 @@ func NewScyllaRepairApp(config *Config) *ScyllaRepairApp {
 		tablesList:    tview.NewTable(),
 		logView:       tview.NewTextView(),
 		statusBar:     tview.NewTextView(),
+		helpModal:     tview.NewModal(),
 		repairConfig:  config.Repair,
 		clusterConfig: config.Cluster,
 		tableManager:  NewTableManager(),
@@ -69,7 +70,7 @@ func (app *ScyllaRepairApp) setupUI() {
 		AddItem(app.nodesTable1, 0, 0, 1, 1, 0, 0, false).
 		AddItem(app.separator, 0, 1, 1, 1, 0, 0, false).
 		AddItem(app.nodesTable2, 0, 2, 1, 1, 0, 0, false)
-	app.nodesGrid.SetBorder(true).SetTitle("Connected to ScyllaDB")
+	app.nodesGrid.SetBorder(true).SetTitle("Initializing...")
 
 	// Setup main page
 	mainGrid := tview.NewGrid().
@@ -89,15 +90,29 @@ func (app *ScyllaRepairApp) setupUI() {
 	app.pages.AddPage("main", mainGrid, true, true)
 	app.pages.AddPage("logs", logPage, true, false)
 
+	// Setup help modal
+	app.setupHelpModal()
+	app.pages.AddPage("help", app.helpModal, true, false)
+
 	// Setup key handling
 	app.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEscape {
+			// Check if help modal is visible
+			currentPage, _ := app.pages.GetFrontPage()
+			if currentPage == "help" {
+				app.pages.HidePage("help")
+				return nil
+			}
 			// Always return to main page by Escape
 			app.pages.SwitchToPage("main")
 			// If exiting auto repair mode, restore cursor
 			if app.autoRepairMode {
 				app.tablesList.SetSelectable(false, false)
 			}
+			return nil
+		} else if event.Key() == tcell.KeyCtrlH {
+			// Show help modal
+			app.pages.ShowPage("help")
 			return nil
 		} else if event.Key() == tcell.KeyCtrlL {
 			// Switch to page with logs
@@ -150,6 +165,34 @@ func (app *ScyllaRepairApp) setupUI() {
 	app.app.SetRoot(app.pages, true)
 }
 
+// setupHelpModal configures the help modal window
+func (app *ScyllaRepairApp) setupHelpModal() {
+	helpText := `Keyboard Controls:
+
+• Ctrl+R: Start repair of selected table
+• Ctrl+A: Start auto repair of all tables
+• Ctrl+L: Switch to logs view
+• Ctrl+H: Show this help
+• Ctrl+C: Exit application
+
+• Alt+PgUp: Scroll nodes up
+• Alt+PgDn: Scroll nodes down
+
+• Escape: Return to main view / Close help
+
+In auto repair mode:
+• Ctrl+L: Switch to logs view
+• Ctrl+C: Exit application
+• Escape: Stop auto repair`
+
+	app.helpModal.SetText(helpText).
+		SetBackgroundColor(tcell.ColorBlack).
+		AddButtons([]string{"Close"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			app.pages.HidePage("help")
+		})
+}
+
 func (app *ScyllaRepairApp) Shutdown() {
 	if app.cancel != nil {
 		app.cancel()
@@ -174,9 +217,9 @@ func (app *ScyllaRepairApp) updateStatusBar(message string) {
 	app.app.QueueUpdateDraw(func() {
 		app.statusBar.Clear()
 		if app.autoRepairMode {
-			fmt.Fprintf(app.statusBar, "%s | AUTO REPAIR MODE | Ctrl+L: logs | Ctrl+C: quit", message)
+			fmt.Fprintf(app.statusBar, "%s | AUTO REPAIR MODE | Ctrl+H: help", message)
 		} else {
-			fmt.Fprintf(app.statusBar, "%s | Ctrl+R: repair selected table | Ctrl+A: auto repair all | Ctrl+L: logs | Alt+PgUp/PgDn: scroll nodes | Escape: main view | Ctrl+C: quit", message)
+			fmt.Fprintf(app.statusBar, "%s | Ctrl+H: help", message)
 		}
 	})
 }
@@ -195,12 +238,16 @@ func (app *ScyllaRepairApp) initialize() {
 		app.clusterConfig.Timeout,
 	)
 
-	// Check connection
-	err := api.TestConnection(ctx)
+	// Get ScyllaDB version
+	version, err := api.GetVersion(ctx)
 	if err != nil {
-		app.log("Error connecting to ScyllaDB: %v", err)
-		app.updateStatusBar("Error: Failed to connect to ScyllaDB")
+		app.log("Warning: Failed to get ScyllaDB version: %v", err)
+		app.updateStatusBar("Warning: Failed to connect to ScyllaDB")
+		app.scyllaVersion = "Unknown"
 		return
+	} else {
+		app.scyllaVersion = version
+		app.log("Connected to ScyllaDB version: %s", version)
 	}
 
 	// Get cluster information
@@ -215,9 +262,9 @@ func (app *ScyllaRepairApp) initialize() {
 	app.tableManager.SetNodes(nodes)
 
 	app.app.QueueUpdateDraw(func() {
-		// Update grid title with connection info
-		title := fmt.Sprintf("Connected to ScyllaDB at %s:%d | Nodes: %d",
-			app.clusterConfig.Host, app.clusterConfig.Port, app.tableManager.GetNodeCount())
+		// Update grid title with connection info and version
+		title := fmt.Sprintf("Connected to ScyllaDB v%s at %s:%d | Nodes: %d",
+			app.scyllaVersion, app.clusterConfig.Host, app.clusterConfig.Port, app.tableManager.GetNodeCount())
 		app.nodesGrid.SetTitle(title)
 
 		// Update nodes display using table manager

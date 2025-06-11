@@ -291,19 +291,28 @@ func (api *ScyllaAPI) CancelRangeRepair(ctx context.Context, seqNum int64) error
 	return fmt.Errorf("repair task not found")
 }
 
-// TestConnection checks connection to ScyllaDB
-func (api *ScyllaAPI) TestConnection(ctx context.Context) error {
-	resp, err := api.makeRequest(ctx, "GET", "/storage_service/release_version", nil)
+// GetVersion returns ScyllaDB version in semver format
+func (api *ScyllaAPI) GetVersion(ctx context.Context) (string, error) {
+	resp, err := api.makeRequest(ctx, "GET", "/storage_service/scylla_release_version", nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect to ScyllaDB: %w", err)
+		return "", fmt.Errorf("version request to ScyllaDB failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ScyllaDB returned status code: %d", resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read version response: %w", err)
 	}
 
-	return nil
+	version := strings.TrimSpace(string(body))
+	version = strings.Trim(version, `"`)
+
+	// Extract semver part from version string
+	if dashIndex := strings.Index(version, "-"); dashIndex != -1 {
+		version = version[:dashIndex]
+	}
+
+	return version, nil
 }
 
 // makeRequest performs HTTP request to ScyllaDB API

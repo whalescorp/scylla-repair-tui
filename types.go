@@ -82,6 +82,7 @@ type ScyllaRepairApp struct {
 	tablesList  *tview.Table
 	logView     *tview.TextView
 	statusBar   *tview.TextView
+	helpModal   *tview.Modal
 
 	clusterConfig ScyllaClusterConfig
 	repairConfig  RepairConfig
@@ -90,6 +91,7 @@ type ScyllaRepairApp struct {
 	repairActive   bool
 	autoRepairMode bool
 	cancel         context.CancelFunc
+	scyllaVersion  string
 }
 
 // Node represents information about cluster node
