@@ -46,15 +46,6 @@ Default nodetool utility shipped with scylladb can ONLY start repairs in all-par
 - **Network access** to ScyllaDB nodes
 
 ### Installation
-
-#### Option 1: Download Binary
-```bash
-# Download the latest release
-wget https://github.com/whalescorp/scylla-repair-tui/releases/latest/download/scylla-repair-tui
-chmod +x scylla-repair-tui
-```
-
-#### Option 2: Build from Source
 ```bash
 git clone https://github.com/whalescorp/scylla-repair-tui.git
 cd scylla-repair-tui
