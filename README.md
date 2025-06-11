@@ -2,11 +2,11 @@
 
 🔧 **Terminal User Interface for ScyllaDB Table Repair Management**
 
-nodetool utility shipped with scylladb can ONLY start repairs in all-parallel mode. In such case, for large and loaded clusters, repair can allocate most of the host memory, cpu and IO for this tasks. To prevent it, i've wrote this utility. You can pass parallel parameter to choose desired parallelism and track progress of subsequent repair tasks in this utility.
+Default nodetool utility shipped with scylladb can ONLY start repairs in all-parallel mode. In such case, for large and loaded clusters, repair can allocate most of the host memory, cpu and IO for this tasks. To prevent it, i've wrote this utility. You can pass parallel parameter to choose desired parallelism and track progress of subsequent repair tasks in this utility.
 
 ## How does it looks like:
 
-```bash
+```
 ┌────────────────────────────────────────────────Connected to ScyllaDB v6.1.1 at localhost:10000 | Nodes: 1────────────────────────────────────────────────┐
 │Address      Host ID                              Status DC          Rack   │Address          Host ID          Status          DC          Rack           │
 │192.168.0.32 55262dbc-f14c-4eae-bbd5-75adf08d6949 UP     datacenter1 rack1  │                                                                             │
@@ -23,7 +23,7 @@ nodetool utility shipped with scylladb can ONLY start repairs in all-parallel mo
 ║                                                                                                                                                          ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 ┌──────────────────────────────────────────────────────────────────────────Status──────────────────────────────────────────────────────────────────────────┐
-│Ready | 14 tables found | Select a table | Ctrl+H: help                                                                                                   │
+│Ready | 3 tables found | Select a table | Ctrl+H: help                                                                                                    │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
